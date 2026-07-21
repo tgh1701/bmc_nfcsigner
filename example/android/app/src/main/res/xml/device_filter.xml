@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Specific device (NXP) - kept for backward compatibility -->
+    <usb-device vendor-id="0x1fc9" product-id="0x0117" />
+</resources>
