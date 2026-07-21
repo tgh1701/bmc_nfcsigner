@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Commit and push nfcsigner from correct dir",
+			"type": "shell",
+			"command": "powershell -NoProfile -Command \"cd 'D:\\BMC_Projects\\nfcsigner_new'; pwd; git add -A; Write-Host '=== Git status ==='; git status --short; Write-Host ''; Write-Host '=== Diff ==='; git diff --cached --stat; Write-Host ''; git commit -m 'Update: real local nfcsigner_plugin.cpp (692 lines) + CMakeLists.txt with vcpkg_PoDoFo config'; Write-Host ''; git push origin main\"",
+			"isBackground": false
+		},
+		{
+			"label": "Commit nfcsigner",
+			"type": "shell",
+			"command": "git add -A && git status --short && git diff --cached --stat && git commit -m \"Update: real local nfcsigner_plugin.cpp + CMakeLists.txt with vcpkg PoDoFo config\" && git push origin main",
+			"isBackground": false
+		}
+	]
+}
