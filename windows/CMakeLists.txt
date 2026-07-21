@@ -1,3 +1,5 @@
+Cmake
+
 # The Flutter tooling requires that developers have a version of Visual Studio
 # installed that includes CMake 3.14 or later. You should not increase this
 # version, as doing so will cause the plugin to fail to compile for some
@@ -29,8 +31,13 @@ list(APPEND PLUGIN_SOURCES
 set(HAVE_PODOFO TRUE)
 set(VCPKG_INSTALLED_DIR "${VCPKG_ROOT}/installed/x64-windows")
 set(PODOFO_INCLUDE_DIR "${VCPKG_INSTALLED_DIR}/include/")
-set(PODOFO_LIBRARY "${VCPKG_INSTALLED_DIR}/lib/podofo.lib")
-set(PODOFO_DLL "${VCPKG_INSTALLED_DIR}/bin/podofo.dll")
+if(CMAKE_BUILD_TYPE MATCHES Debug)
+    set(PODOFO_LIBRARY "${VCPKG_INSTALLED_DIR}/debug/lib/podofo.lib")
+    set(PODOFO_DLL "${VCPKG_INSTALLED_DIR}/debug/bin/podofo.dll")
+else()
+    set(PODOFO_LIBRARY "${VCPKG_INSTALLED_DIR}/lib/podofo.lib")
+    set(PODOFO_DLL "${VCPKG_INSTALLED_DIR}/bin/podofo.dll")
+endif()
 if(EXISTS "${PODOFO_INCLUDE_DIR}/podofo/podofo.h" AND EXISTS "${PODOFO_LIBRARY}")
     message(STATUS "Found podofo directly")
     # Tạo target thủ công - SHARED vì podofo.dll là dynamic library
@@ -96,7 +103,11 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
-set(VCPKG_BIN_DIR "${VCPKG_INSTALLED_DIR}/bin")
+if(CMAKE_BUILD_TYPE MATCHES Debug)
+    set(VCPKG_BIN_DIR "${VCPKG_INSTALLED_DIR}/debug/bin")
+else()
+    set(VCPKG_BIN_DIR "${VCPKG_INSTALLED_DIR}/bin")
+endif()
 set(nfcsigner_bundled_libraries
   "${VCPKG_BIN_DIR}/podofo.dll"
   "${VCPKG_BIN_DIR}/libcrypto-3-x64.dll"

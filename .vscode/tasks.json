@@ -12,6 +12,12 @@
 			"type": "shell",
 			"command": "git add -A && git status --short && git diff --cached --stat && git commit -m \"Update: real local nfcsigner_plugin.cpp + CMakeLists.txt with vcpkg PoDoFo config\" && git push origin main",
 			"isBackground": false
+		},
+		{
+			"label": "Compare nfcsigner_plugin.cpp MD5",
+			"type": "shell",
+			"command": "powershell -NoProfile -Command \"$a=Get-FileHash 'D:\\BMC_Projects\\nfcsigner_new\\windows\\nfcsigner_plugin.cpp' -Algorithm MD5; $b=Get-FileHash 'C:\\Users\\tgh17\\AppData\\Local\\Pub\\Cache\\git\\nfcsigner-8eeff7050df3a320a23040f4ee7ff15ea8c4e0e7\\windows\\nfcsigner_plugin.cpp' -Algorithm MD5; Write-Host 'Repo: ' $a.Hash; Write-Host 'Cache: ' $b.Hash; if($a.Hash -eq $b.Hash){Write-Host 'MATCH'}else{Write-Host 'DIFFERENT'}\"",
+			"isBackground": false
 		}
 	]
 }
