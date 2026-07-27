@@ -1,5 +1,3 @@
-nfcsigner_plugin.cpp
-
 #define NOMINMAX  // Ngăn chặn định nghĩa min và max từ windows.h
 
 #include "nfcsigner_plugin.h"

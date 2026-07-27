@@ -1,5 +1,3 @@
-Cmake
-
 # The Flutter tooling requires that developers have a version of Visual Studio
 # installed that includes CMake 3.14 or later. You should not increase this
 # version, as doing so will cause the plugin to fail to compile for some
@@ -31,21 +29,30 @@ list(APPEND PLUGIN_SOURCES
 set(HAVE_PODOFO TRUE)
 set(VCPKG_INSTALLED_DIR "${VCPKG_ROOT}/installed/x64-windows")
 set(PODOFO_INCLUDE_DIR "${VCPKG_INSTALLED_DIR}/include/")
+# Sử dụng generator expressions để hỗ trợ multi-config generator (Visual Studio)
+# CMAKE_BUILD_TYPE không hoạt động với VS multi-config; phải dùng $<CONFIG:Debug>
+set(PODOFO_LIBRARY_RELEASE "${VCPKG_INSTALLED_DIR}/lib/podofo.lib")
+set(PODOFO_LIBRARY_DEBUG "${VCPKG_INSTALLED_DIR}/debug/lib/podofo.lib")
+set(PODOFO_DLL_RELEASE "${VCPKG_INSTALLED_DIR}/bin/podofo.dll")
+set(PODOFO_DLL_DEBUG "${VCPKG_INSTALLED_DIR}/debug/bin/podofo.dll")
+# Dùng release làm fallback để kiểm tra EXISTS
 if(CMAKE_BUILD_TYPE MATCHES Debug)
-    set(PODOFO_LIBRARY "${VCPKG_INSTALLED_DIR}/debug/lib/podofo.lib")
-    set(PODOFO_DLL "${VCPKG_INSTALLED_DIR}/debug/bin/podofo.dll")
+    set(PODOFO_LIBRARY "${PODOFO_LIBRARY_DEBUG}")
+    set(PODOFO_DLL "${PODOFO_DLL_DEBUG}")
 else()
-    set(PODOFO_LIBRARY "${VCPKG_INSTALLED_DIR}/lib/podofo.lib")
-    set(PODOFO_DLL "${VCPKG_INSTALLED_DIR}/bin/podofo.dll")
+    set(PODOFO_LIBRARY "${PODOFO_LIBRARY_RELEASE}")
+    set(PODOFO_DLL "${PODOFO_DLL_RELEASE}")
 endif()
 if(EXISTS "${PODOFO_INCLUDE_DIR}/podofo/podofo.h" AND EXISTS "${PODOFO_LIBRARY}")
     message(STATUS "Found podofo directly")
     # Tạo target thủ công - SHARED vì podofo.dll là dynamic library
     add_library(podofo SHARED IMPORTED)
     set_target_properties(podofo PROPERTIES
-            IMPORTED_IMPLIB "${PODOFO_LIBRARY}"
-            IMPORTED_LOCATION "${PODOFO_DLL}"
             INTERFACE_INCLUDE_DIRECTORIES "${PODOFO_INCLUDE_DIR}"
+            IMPORTED_IMPLIB "${PODOFO_LIBRARY_RELEASE}"
+            IMPORTED_LOCATION "${PODOFO_DLL_RELEASE}"
+            IMPORTED_IMPLIB_DEBUG "${PODOFO_LIBRARY_DEBUG}"
+            IMPORTED_LOCATION_DEBUG "${PODOFO_DLL_DEBUG}"
     )
 else()
     message(WARNING "podofo not found - using raw data mode")
@@ -84,8 +91,8 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_include_directories(${PLUGIN_NAME} PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         # Thêm đường dẫn include cho PoDoFo và OpenSSL
-        ${PODOFO_INCLUDE_DIRS}
-        ${OPENSSL_INCLUDE_DIRS}
+        ${PODOFO_INCLUDE_DIR}
+        ${OPENSSL_INCLUDE_DIR}
 )
 if(HAVE_PODOFO)
     target_compile_definitions(${PLUGIN_NAME} PRIVATE HAVE_PODOFO)
