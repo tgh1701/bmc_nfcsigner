@@ -110,13 +110,10 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
-if(CMAKE_BUILD_TYPE MATCHES Debug)
-    set(VCPKG_BIN_DIR "${VCPKG_INSTALLED_DIR}/debug/bin")
-else()
-    set(VCPKG_BIN_DIR "${VCPKG_INSTALLED_DIR}/bin")
-endif()
+set(PODOFO_BIN_DIR "$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/debug/bin,${VCPKG_INSTALLED_DIR}/bin>")
+set(VCPKG_BIN_DIR "${VCPKG_INSTALLED_DIR}/bin")
 set(nfcsigner_bundled_libraries
-  "${VCPKG_BIN_DIR}/podofo.dll"
+  "${PODOFO_BIN_DIR}/podofo.dll"
   "${VCPKG_BIN_DIR}/libcrypto-3-x64.dll"
   "${VCPKG_BIN_DIR}/libssl-3-x64.dll"
   "${VCPKG_BIN_DIR}/freetype.dll"

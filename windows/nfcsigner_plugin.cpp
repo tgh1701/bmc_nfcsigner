@@ -138,6 +138,16 @@ namespace nfcsigner {
         return cmd;
     }
 
+    // VERIFY PIN for decryption operations (PW1 mode 0x82).
+    // OpenPGP cards require mode 0x82 for PSO:DECIPHER — distinct from mode
+    // 0x81 used for PSO:CDS (signing).
+    std::vector<uint8_t> CreateVerifyDecryptPinCommand(const std::string& pin) {
+        std::vector<uint8_t> pin_bytes(pin.begin(), pin.end());
+        std::vector<uint8_t> cmd = { 0x00, 0x20, 0x00, 0x82, (uint8_t)pin_bytes.size() };
+        cmd.insert(cmd.end(), pin_bytes.begin(), pin_bytes.end());
+        return cmd;
+    }
+
     std::vector<uint8_t> CreateComputeSignatureCommand(const std::vector<uint8_t>& data, int keyIndex) {
         uint8_t p1 = 0x9E;
         uint8_t p2;
@@ -533,48 +543,110 @@ void NfcsignerPlugin::HandleMethodCall(
                     PoDoFo::PdfColor black(0.0, 0.0, 0.0);
                     painter.GraphicsState.SetStrokingColor(black);
                     painter.GraphicsState.SetLineWidth(1.0);
-                    
-                    // REMOVED X box drawing as requested
 
-                    // Render text using Arial TrueType font to support Vietnamese UTF-8
-                    try {
-                        auto& font = document.GetFonts().GetOrCreateFont("C:\\Windows\\Fonts\\arial.ttf");
-                        painter.TextState.SetFont(font, 10);
-                        
-                        std::string displayText = "Signed by: " + signerName;
-                        painter.DrawText(displayText, 5, height - 15);
-                        
-                        if (!signDate.empty()) {
-                            std::string dateDisplay = "Date: " + signDate;
-                            painter.DrawText(dateDisplay, 5, height - 30);
-                        }
-                        std::cout << "[DEBUG] Text drawn successfully" << std::endl;
-                    } catch (const std::exception& e) {
-                        std::cout << "[DEBUG] Failed to draw text: " << e.what() << std::endl;
-                    }
+                    const bool hasImage = !signatureImageBytes.empty();
+                    const bool hasText = !signerName.empty();
 
-                    if (!signatureImageBytes.empty()) {
-                        std::cout << "[DEBUG] Loading signature image (" << signatureImageBytes.size() << " bytes)..." << std::endl;
+                    double img_w = 0.0;
+                    double img_h = 0.0;
+                    double img_x = 4.0;
+                    double img_y = 0.0;
+                    std::shared_ptr<PoDoFo::PdfImage> image = nullptr;
+
+                    // 1. Tải và tính toán kích thước ảnh chữ ký nếu có
+                    if (hasImage) {
                         try {
-                            auto image = document.CreateImage();
+                            image = document.CreateImage();
                             image->LoadFromBuffer(
-                                    PoDoFo::bufferview(
-                                            reinterpret_cast<const char*>(signatureImageBytes.data()),
-                                            signatureImageBytes.size()
-                                    )
+                                PoDoFo::bufferview(
+                                    reinterpret_cast<const char*>(signatureImageBytes.data()),
+                                    signatureImageBytes.size()
+                                )
                             );
                             if (image->GetWidth() > 0 && image->GetHeight() > 0) {
-                                double img_h = signatureImageHeight;
-                                double img_w = signatureImageWidth;
-                                double scale_y = img_h / image->GetHeight();
+                                img_w = signatureImageWidth > 0 ? signatureImageWidth : 60.0;
+                                img_h = signatureImageHeight > 0 ? signatureImageHeight : 50.0;
+
+                                if (hasText) {
+                                    // Khi có cả chữ: giới hạn ảnh ở nửa trái (tối đa 45% chiều rộng)
+                                    double max_w = (std::min)(width * 0.45, (std::max)(10.0, width - 80.0));
+                                    if (img_w > max_w) {
+                                        double ratio = max_w / img_w;
+                                        img_w = max_w;
+                                        img_h *= ratio;
+                                    }
+                                    if (img_h > height - 6.0) {
+                                        double ratio = (height - 6.0) / img_h;
+                                        img_h = height - 6.0;
+                                        img_w *= ratio;
+                                    }
+                                    img_x = 4.0;
+                                    img_y = (height - img_h) / 2.0;
+                                } else {
+                                    // Chỉ có ảnh: căn giữa khung chữ ký
+                                    if (img_w > width - 8.0) {
+                                        double ratio = (width - 8.0) / img_w;
+                                        img_w = width - 8.0;
+                                        img_h *= ratio;
+                                    }
+                                    if (img_h > height - 6.0) {
+                                        double ratio = (height - 6.0) / img_h;
+                                        img_h = height - 6.0;
+                                        img_w *= ratio;
+                                    }
+                                    img_x = (width - img_w) / 2.0;
+                                    img_y = (height - img_h) / 2.0;
+                                }
+
                                 double scale_x = img_w / image->GetWidth();
-                                painter.DrawImage(*image, 2, (annot_rect.Height - img_h)/2, scale_x, scale_y);
-                                std::cout << "[DEBUG] Signature image drawn OK" << std::endl;
+                                double scale_y = img_h / image->GetHeight();
+                                painter.DrawImage(*image, img_x, img_y, scale_x, scale_y);
+                                std::cout << "[DEBUG] Signature image drawn at x=" << img_x << ", y=" << img_y 
+                                          << ", w=" << img_w << ", h=" << img_h << std::endl;
                             }
-                        } catch(const PoDoFo::PdfError& e) {
+                        } catch (const PoDoFo::PdfError& e) {
                             std::cerr << "Warning: Cannot load signature image: " << e.what() << std::endl;
                         }
                     }
+
+                    // 2. Vẽ thông tin văn bản cạnh ảnh (side-by-side) không bao giờ bị đè
+                    if (hasText) {
+                        try {
+                            auto& font = document.GetFonts().GetOrCreateFont("C:\\Windows\\Fonts\\arial.ttf");
+                            double fontSize = 9.0;
+                            if (height < 45.0) fontSize = 7.5;
+                            else if (height > 90.0) fontSize = 10.0;
+                            painter.TextState.SetFont(font, fontSize);
+
+                            // Tọa độ X của văn bản: nếu có ảnh thì đặt ở bên phải ảnh, không có ảnh thì bắt đầu từ lề trái
+                            double text_x = hasImage && (img_w > 0) ? (img_x + img_w + 8.0) : 6.0;
+
+                            std::vector<std::string> lines;
+                            lines.push_back("Người ký: " + signerName);
+                            if (!signDate.empty()) {
+                                lines.push_back("Ngày ký: " + signDate);
+                            }
+                            if (!reason.empty() && reason != "Approved" && reason != "Ký duyệt!") {
+                                lines.push_back("Lý do: " + reason);
+                            }
+
+                            double lineHeight = fontSize * 1.35;
+                            double totalTextHeight = lines.size() * lineHeight;
+                            // Căn giữa theo chiều dọc
+                            double start_y = (height + totalTextHeight) / 2.0 - fontSize;
+                            if (start_y > height - 4.0) start_y = height - 4.0;
+
+                            double current_y = start_y;
+                            for (const auto& line : lines) {
+                                painter.DrawText(line, text_x, current_y);
+                                current_y -= lineHeight;
+                            }
+                            std::cout << "[DEBUG] Text drawn side-by-side at text_x=" << text_x << std::endl;
+                        } catch (const std::exception& e) {
+                            std::cout << "[DEBUG] Failed to draw text: " << e.what() << std::endl;
+                        }
+                    }
+
                     std::cout << "[DEBUG] FinishDrawing..." << std::endl;
                     painter.FinishDrawing();
                     std::cout << "[DEBUG] SetAppearanceStream..." << std::endl;
@@ -587,30 +659,32 @@ void NfcsignerPlugin::HandleMethodCall(
                 std::cout << "=== Cấu hình PdfSignerCms với callback để ký bằng thẻ ===" << std::endl;
                 PoDoFo::PdfSignerCmsParams params;
                 params.Hashing = PoDoFo::PdfHashingAlgorithm::SHA256;
-                // We MUST NOT use ServiceDoDryRun, otherwise PoDoFo will call our callback with dryrun=true,
-                // and we would have to resize() the charbuff, which crashes due to DLL CRT mismatch on Windows.
-                // Instead, we let PoDoFo use the certificate's public key size to automatically resize the buffer.
-                // We DO use ServiceDoWrapDigest so PoDoFo wraps the hash in a DigestInfo.
-                params.Flags = PoDoFo::PdfSignerCmsFlags::ServiceDoWrapDigest;
+                // Kết hợp ServiceDoDryRun (để PoDoFo biết chính xác kích thước chữ ký) và ServiceDoWrapDigest
+                params.Flags = static_cast<PoDoFo::PdfSignerCmsFlags>(
+                    static_cast<int>(PoDoFo::PdfSignerCmsFlags::ServiceDoDryRun) |
+                    static_cast<int>(PoDoFo::PdfSignerCmsFlags::ServiceDoWrapDigest)
+                );
 
                 params.SigningService = [&](PoDoFo::bufferview hashToSign, bool dryrun, PoDoFo::charbuff& signedHash) {
                     std::cout << "--> Entering SigningService. dryrun=" << (dryrun ? "YES" : "NO") 
-                              << ", buffer size=" << signedHash.size() << std::endl;
+                              << ", signatureLength=" << signatureLength 
+                              << ", initial buffer size=" << signedHash.size() << std::endl;
                     std::cout.flush();
 
                     if (dryrun) {
-                        return; // Should not be called because we didn't specify ServiceDoDryRun
+                        // Báo cho PoDoFo kích thước cần thiết của khối chữ ký số
+                        signedHash.resize(signatureLength);
+                        std::cout << "<-- Exiting SigningService (Dry run complete, reserved " << signatureLength << " bytes)." << std::endl;
+                        return;
                     }
 
                     std::cout << "Real run: Getting signature from card..." << std::endl;
                     
-                    // MUST use hashToSign provided by PoDoFo, not the Dart hash,
-                    // because PoDoFo builds the CMS SignedAttributes internally.
+                    // Sử dụng hashToSign từ PoDoFo (chứa CMS SignedAttributes)
                     std::vector<uint8_t> hash_to_sign_vec;
                     if (!hashToSign.empty()) {
                         hash_to_sign_vec.assign(hashToSign.begin(), hashToSign.end());
                     } else {
-                        // Fallback to Dart hash if PoDoFo didn't provide one
                         hash_to_sign_vec = data_to_send_to_card;
                     }
 
@@ -622,32 +696,12 @@ void NfcsignerPlugin::HandleMethodCall(
                     std::vector<uint8_t> signature_raw(sign_resp.begin(), sign_resp.end() - 2);
                     std::cout << "Real run: signature size=" << signature_raw.size() << " bytes" << std::endl;
 
-                    // DANGEROUS: Do not use signedHash.assign() or signedHash.resize()!
-                    // Modifying the capacity/size of charbuff across the DLL boundary causes a CRT crash.
-                    // PoDoFo has already resized signedHash to the correct RSA block size.
-                    size_t copySize = (std::min)(signature_raw.size(), signedHash.size());
-                    if (copySize > 0) {
-                        // DIAGNOSTIC: check where the actual data is if card returned more bytes
-                        if (signature_raw.size() > signedHash.size()) {
-                            bool first_half_zero = true;
-                            for (size_t i = 0; i < copySize; i++) {
-                                if (signature_raw[i] != 0) { first_half_zero = false; break; }
-                            }
-                            if (first_half_zero) {
-                                std::cout << "[WARNING] First half is all zeroes, copying from the END of the buffer!" << std::endl;
-                                memcpy(signedHash.data(), signature_raw.data() + (signature_raw.size() - copySize), copySize);
-                            } else {
-                                std::cout << "[WARNING] First half contains data, copying from the START." << std::endl;
-                                memcpy(signedHash.data(), signature_raw.data(), copySize);
-                            }
-                        } else {
-                            memcpy(signedHash.data(), signature_raw.data(), copySize);
-                        }
-                    } else {
-                        std::cout << "[ERROR] PoDoFo provided an empty buffer!" << std::endl;
+                    if (signature_raw.empty()) {
+                        throw std::runtime_error("Card returned an empty signature.");
                     }
 
-                    std::cout << "<-- SigningService done, copied " << copySize << " bytes" << std::endl;
+                    signedHash.assign(reinterpret_cast<const char*>(signature_raw.data()), signature_raw.size());
+                    std::cout << "<-- SigningService done, assigned " << signature_raw.size() << " bytes" << std::endl;
                 };
 
                 // Create signer with certificate from card
@@ -695,14 +749,85 @@ void NfcsignerPlugin::HandleMethodCall(
         }, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>(p_result));
     }
 
-    // APDU command for PSO:DECIPHER
-    std::vector<uint8_t> CreateDecipherCommand(const std::vector<uint8_t>& data) {
-        // PSO:DECIPHER: CLA=00, INS=2A, P1=80, P2=86
-        // Padding indicator byte (0x00) prepended to data
-        std::vector<uint8_t> cmd = { 0x00, 0x2A, 0x80, 0x86, (uint8_t)(data.size() + 1), 0x00 };
+    // Build a single PSO:DECIPHER APDU chunk.
+    // PSO:DECIPHER: INS=0x2A, P1=0x80, P2=0x86.
+    // CLA=0x10 marks a non-final chained chunk; CLA=0x00 marks the final chunk.
+    std::vector<uint8_t> CreateDecipherChunkCommand(const std::vector<uint8_t>& data, bool isLast) {
+        std::vector<uint8_t> cmd = {
+            (uint8_t)(isLast ? 0x00 : 0x10),
+            0x2A, 0x80, 0x86,
+            (uint8_t)data.size()
+        };
         cmd.insert(cmd.end(), data.begin(), data.end());
-        cmd.push_back(0x00);
+        if (isLast) {
+            cmd.push_back(0x00); // Le — expect decrypted block
+        }
         return cmd;
+    }
+
+    // PSO:DECIPHER with command chaining.
+    //
+    // OpenPGP cards limit command data to 255 bytes per APDU, but RSA-2048 /
+    // RSA-4096 ciphertext is 256 / 512 bytes (plus the 1-byte PKCS#1 v1.5
+    // padding indicator), so the payload must be split across several chained
+    // APDUs. Sending it in one short APDU truncated the Lc byte and made the
+    // card reject the command, which is why S-USB decryption failed even with
+    // the USB token plugged in.
+    std::vector<uint8_t> NfcsignerPlugin::SendChainedDecipher(SCARDHANDLE hCard, const std::vector<uint8_t>& encryptedData, DWORD dwActiveProtocol) {
+        if (encryptedData.empty()) {
+            throw std::runtime_error("Decryption failed: encrypted data is empty.");
+        }
+
+        // Full command data = padding indicator (0x00) + ciphertext.
+        std::vector<uint8_t> fullData;
+        fullData.reserve(encryptedData.size() + 1);
+        fullData.push_back(0x00); // PKCS#1 v1.5 padding indicator
+        fullData.insert(fullData.end(), encryptedData.begin(), encryptedData.end());
+
+        const size_t kChunkSize = 255;
+        const size_t chunkCount = (fullData.size() + kChunkSize - 1) / kChunkSize;
+        size_t offset = 0;
+        size_t chunkIndex = 0;
+        std::vector<uint8_t> finalResponse;
+
+        std::cout << "[DECRYPT] ciphertext=" << encryptedData.size()
+                  << "B total=" << fullData.size()
+                  << "B chunks=" << chunkCount << std::endl;
+
+        while (offset < fullData.size()) {
+            const size_t chunkLen = (std::min)(fullData.size() - offset, kChunkSize);
+            const bool isLast = (offset + chunkLen) >= fullData.size();
+
+            std::vector<uint8_t> chunk(fullData.begin() + offset, fullData.begin() + offset + chunkLen);
+            auto resp = TransmitAndGetResponse(hCard, CreateDecipherChunkCommand(chunk, isLast), dwActiveProtocol);
+
+            if (resp.size() < 2) {
+                throw std::runtime_error("Decryption failed: empty card response.");
+            }
+
+            const uint8_t sw1 = resp[resp.size() - 2];
+            const uint8_t sw2 = resp[resp.size() - 1];
+            if (sw1 != 0x90 || sw2 != 0x00) {
+                std::vector<uint8_t> sw = { sw1, sw2 };
+                std::cout << "[DECRYPT] chunk " << (chunkIndex + 1) << "/" << chunkCount
+                          << " FAILED SW=0x" << ToHexString(sw) << std::endl;
+                throw std::runtime_error("Decryption failed: SW=0x" + ToHexString(sw));
+            }
+
+            std::cout << "[DECRYPT] chunk " << (chunkIndex + 1) << "/" << chunkCount
+                      << " len=" << chunkLen << (isLast ? " (final)" : "") << " SW=9000" << std::endl;
+
+            if (isLast) {
+                finalResponse = std::move(resp);
+                if (finalResponse.size() >= 2) {
+                    std::cout << "[DECRYPT] OK — decrypted " << (finalResponse.size() - 2) << " bytes" << std::endl;
+                }
+            }
+            offset += chunkLen;
+            ++chunkIndex;
+        }
+
+        return finalResponse;
     }
 
     void NfcsignerPlugin::HandleDecryptData(const flutter::EncodableMap* args, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
@@ -717,12 +842,12 @@ void NfcsignerPlugin::HandleMethodCall(
                 throw std::runtime_error("Select Applet failed.");
             }
 
-            auto verify_resp = TransmitAndGetResponse(hCard, CreateVerifyPinCommand(pin), dwActiveProtocol);
+            auto verify_resp = TransmitAndGetResponse(hCard, CreateVerifyDecryptPinCommand(pin), dwActiveProtocol);
             if (verify_resp.size() < 2 || verify_resp[verify_resp.size() - 2] != 0x90) {
                 throw std::runtime_error("Verify PIN failed.");
             }
 
-            auto decrypt_resp = TransmitAndGetResponse(hCard, CreateDecipherCommand(encryptedData), dwActiveProtocol);
+            auto decrypt_resp = SendChainedDecipher(hCard, encryptedData, dwActiveProtocol);
             if (decrypt_resp.size() < 2 || decrypt_resp[decrypt_resp.size() - 2] != 0x90) {
                 throw std::runtime_error("Decryption failed.");
             }
