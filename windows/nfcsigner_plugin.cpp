@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #ifdef HAVE_PODOFO
 // Include PoDoFo và OpenSSL
@@ -234,38 +235,44 @@ void NfcsignerPlugin::HandleMethodCall(
     result->NotImplemented();
   }
 }
-// Wrapper for an entire card operation
+// Wrapper for an entire card operation (Runs on a background thread so it NEVER blocks the Win32/Flutter UI loop)
     template<typename Func>
-    void CardOperation(Func&& operation, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-        SCARDCONTEXT hContext = 0;
-        SCARDHANDLE hCard = 0;
-        DWORD dwActiveProtocol = 0;
+    void CardOperation(Func&& operation, std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        std::thread([op = std::forward<Func>(operation), result]() mutable {
+            SCARDCONTEXT hContext = 0;
+            SCARDHANDLE hCard = 0;
+            DWORD dwActiveProtocol = 0;
 
-        try {
-            LONG lReturn = SCardEstablishContext(SCARD_SCOPE_USER, NULL, NULL, &hContext);
-            if (lReturn != SCARD_S_SUCCESS) throw std::runtime_error("SCardEstablishContext failed.");
+            try {
+                LONG lReturn = SCardEstablishContext(SCARD_SCOPE_USER, NULL, NULL, &hContext);
+                if (lReturn != SCARD_S_SUCCESS) throw std::runtime_error("SCardEstablishContext failed.");
 
-            DWORD dwReaders = SCARD_AUTOALLOCATE;
-            LPTSTR mszReaders = NULL;
-            lReturn = SCardListReaders(hContext, NULL, (LPTSTR)&mszReaders, &dwReaders);
-            if (lReturn != SCARD_S_SUCCESS || mszReaders == NULL || mszReaders[0] == '\0') {
-                if (mszReaders) SCardFreeMemory(hContext, mszReaders);
-                throw std::runtime_error("No card reader found.");
+                DWORD dwReaders = SCARD_AUTOALLOCATE;
+                LPTSTR mszReaders = NULL;
+                lReturn = SCardListReaders(hContext, NULL, (LPTSTR)&mszReaders, &dwReaders);
+                if (lReturn != SCARD_S_SUCCESS || mszReaders == NULL || mszReaders[0] == '\0') {
+                    if (mszReaders) SCardFreeMemory(hContext, mszReaders);
+                    throw std::runtime_error("No card reader found.");
+                }
+
+                lReturn = SCardConnect(hContext, mszReaders, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, &hCard, &dwActiveProtocol);
+                SCardFreeMemory(hContext, mszReaders);
+                if (lReturn != SCARD_S_SUCCESS) throw std::runtime_error("SCardConnect failed. Is a card inserted?");
+
+                std::cout << "[CardOperation] Connected with protocol: " << (dwActiveProtocol == SCARD_PROTOCOL_T0 ? "T0" : "T1") << std::endl;
+                op(hCard, dwActiveProtocol);
+
+            } catch (const std::runtime_error& e) {
+                result->Error("PC/SC_ERROR", e.what());
+            } catch (const std::exception& e) {
+                result->Error("EXCEPTION", e.what());
+            } catch (...) {
+                result->Error("UNKNOWN_ERROR", "Unknown exception during smart card operation");
             }
 
-            lReturn = SCardConnect(hContext, mszReaders, SCARD_SHARE_SHARED, SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, &hCard, &dwActiveProtocol);
-            SCardFreeMemory(hContext, mszReaders);
-            if (lReturn != SCARD_S_SUCCESS) throw std::runtime_error("SCardConnect failed. Is a card inserted?");
-
-            std::cout << "[CardOperation] Connected with protocol: " << (dwActiveProtocol == SCARD_PROTOCOL_T0 ? "T0" : "T1") << std::endl;
-            operation(hCard, dwActiveProtocol);
-
-        } catch (const std::runtime_error& e) {
-            result->Error("PC/SC_ERROR", e.what());
-        }
-
-        if (hCard) SCardDisconnect(hCard, SCARD_LEAVE_CARD);
-        if (hContext) SCardReleaseContext(hContext);
+            if (hCard) SCardDisconnect(hCard, SCARD_LEAVE_CARD);
+            if (hContext) SCardReleaseContext(hContext);
+        }).detach();
     }
 
 // APDU Transmit function with GET RESPONSE handling
@@ -316,13 +323,14 @@ void NfcsignerPlugin::HandleMethodCall(
         return response_buffer;
     }
     void NfcsignerPlugin::HandleSign(const flutter::EncodableMap* args, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-        auto p_result = result.release();
-        CardOperation([this, args, p_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
+        flutter::EncodableMap copied_args = (args != nullptr) ? *args : flutter::EncodableMap();
+        auto shared_result = std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(result.release());
+        CardOperation([this, copied_args = std::move(copied_args), shared_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
             // Lấy tham số
-            auto appletID = std::get<std::string>(args->at(flutter::EncodableValue("appletID")));
-            auto pin = std::get<std::string>(args->at(flutter::EncodableValue("pin")));
-            auto dataToSign = std::get<std::vector<uint8_t>>(args->at(flutter::EncodableValue("dataToSign")));
-            auto keyIndex = std::get<int>(args->at(flutter::EncodableValue("keyIndex")));
+            auto appletID = std::get<std::string>(copied_args.at(flutter::EncodableValue("appletID")));
+            auto pin = std::get<std::string>(copied_args.at(flutter::EncodableValue("pin")));
+            auto dataToSign = std::get<std::vector<uint8_t>>(copied_args.at(flutter::EncodableValue("dataToSign")));
+            auto keyIndex = std::get<int>(copied_args.at(flutter::EncodableValue("keyIndex")));
 
             // Chuỗi lệnh APDU
             auto select_resp = TransmitAndGetResponse(hCard, CreateSelectAppletCommand(appletID), dwActiveProtocol);
@@ -341,17 +349,18 @@ void NfcsignerPlugin::HandleMethodCall(
             }
 
             std::vector<uint8_t> signature_data(sign_resp.begin(), sign_resp.end() - 2);
-            p_result->Success(flutter::EncodableValue(signature_data));
+            shared_result->Success(flutter::EncodableValue(signature_data));
 
-        }, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>(p_result));
+        }, shared_result);
     }
     // Handler for getRsaPublicKey
     void NfcsignerPlugin::HandleGetPublicKey(const flutter::EncodableMap* args, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-        auto p_result = result.release();
-        CardOperation([this, args, p_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
+        flutter::EncodableMap copied_args = (args != nullptr) ? *args : flutter::EncodableMap();
+        auto shared_result = std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(result.release());
+        CardOperation([this, copied_args = std::move(copied_args), shared_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
             // Extract args
-            auto appletID = std::get<std::string>(args->at(flutter::EncodableValue("appletID")));
-            auto keyRole = std::get<std::string>(args->at(flutter::EncodableValue("keyRole")));
+            auto appletID = std::get<std::string>(copied_args.at(flutter::EncodableValue("appletID")));
+            auto keyRole = std::get<std::string>(copied_args.at(flutter::EncodableValue("keyRole")));
 
             // APDU command definitions
             auto select_cmd = CreateSelectAppletCommand(appletID);
@@ -370,15 +379,16 @@ void NfcsignerPlugin::HandleMethodCall(
 
             // Return success
             std::vector<uint8_t> key_data(key_resp.begin(), key_resp.end() - 2);
-            p_result->Success(flutter::EncodableValue(key_data));
+            shared_result->Success(flutter::EncodableValue(key_data));
 
-        }, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>(p_result));
+        }, shared_result);
     }
     void NfcsignerPlugin::HandleGetCertificate(const flutter::EncodableMap* args, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-        auto p_result = result.release();
-        CardOperation([this, args, p_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
+        flutter::EncodableMap copied_args = (args != nullptr) ? *args : flutter::EncodableMap();
+        auto shared_result = std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(result.release());
+        CardOperation([this, copied_args = std::move(copied_args), shared_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
             // Lấy tham số
-            auto appletID = std::get<std::string>(args->at(flutter::EncodableValue("appletID")));
+            auto appletID = std::get<std::string>(copied_args.at(flutter::EncodableValue("appletID")));
 
             // Chuỗi lệnh APDU
             auto select_resp = TransmitAndGetResponse(hCard, CreateSelectAppletCommand(appletID), dwActiveProtocol);
@@ -397,48 +407,45 @@ void NfcsignerPlugin::HandleMethodCall(
             }
 
             std::vector<uint8_t> cert_data(cert_resp.begin(), cert_resp.end() - 2);
-            p_result->Success(flutter::EncodableValue(cert_data));
+            shared_result->Success(flutter::EncodableValue(cert_data));
 
-        }, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>(p_result));
+        }, shared_result);
     }
     void NfcsignerPlugin::HandleSignPdf(const flutter::EncodableMap* args, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
 
-        auto p_result = result.release();
+        flutter::EncodableMap copied_args = (args != nullptr) ? *args : flutter::EncodableMap();
+        auto shared_result = std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(result.release());
 
-        CardOperation([this, args, p_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
+        CardOperation([this, copied_args = std::move(copied_args), shared_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
             try {
                 // 1. Lấy tất cả tham số từ Flutter
                 std::cout << "=== Starting PDF Signing Process ===" << std::endl;
                 std::cout << "PoDoFo version: " << PODOFO_VERSION_STRING << std::endl;
-                // 1. Lấy và validate các tham số
-                if (!args) {
-                    throw std::runtime_error("Arguments are null");
-                }
                 std::cout << "=== Starting get Parameters ===" << std::endl;
-                auto pdfBytes = std::get<std::vector<uint8_t>>(args->at(flutter::EncodableValue("pdfBytes")));
-                auto appletID = std::get<std::string>(args->at(flutter::EncodableValue("appletID")));
-                auto pin = std::get<std::string>(args->at(flutter::EncodableValue("pin")));
-                auto keyIndex = std::get<int>(args->at(flutter::EncodableValue("keyIndex")));
+                auto pdfBytes = std::get<std::vector<uint8_t>>(copied_args.at(flutter::EncodableValue("pdfBytes")));
+                auto appletID = std::get<std::string>(copied_args.at(flutter::EncodableValue("appletID")));
+                auto pin = std::get<std::string>(copied_args.at(flutter::EncodableValue("pin")));
+                auto keyIndex = std::get<int>(copied_args.at(flutter::EncodableValue("keyIndex")));
                 // reason/location may not be sent from Dart; use find() with defaults
                 std::string reason = "Approved";
-                auto reason_iter = args->find(flutter::EncodableValue("reason"));
-                if (reason_iter != args->end() && std::holds_alternative<std::string>(reason_iter->second)) {
+                auto reason_iter = copied_args.find(flutter::EncodableValue("reason"));
+                if (reason_iter != copied_args.end() && std::holds_alternative<std::string>(reason_iter->second)) {
                     reason = std::get<std::string>(reason_iter->second);
                 }
                 std::string location = "Hanoi";
-                auto location_iter = args->find(flutter::EncodableValue("location"));
-                if (location_iter != args->end() && std::holds_alternative<std::string>(location_iter->second)) {
+                auto location_iter = copied_args.find(flutter::EncodableValue("location"));
+                if (location_iter != copied_args.end() && std::holds_alternative<std::string>(location_iter->second)) {
                     location = std::get<std::string>(location_iter->second);
                 }
                 // signatureLength may not be sent from Dart; default to 512 (RSA 4096)
                 int signatureLength = 512;
-                auto sigLen_iter = args->find(flutter::EncodableValue("signatureLength"));
-                if (sigLen_iter != args->end()) {
+                auto sigLen_iter = copied_args.find(flutter::EncodableValue("signatureLength"));
+                if (sigLen_iter != copied_args.end()) {
                     signatureLength = std::get<int>(sigLen_iter->second);
                 }
 
                 // Lấy DigestInfo bạn đã cung cấp
-                auto data_to_send_to_card = std::get<std::vector<uint8_t>>(args->at(flutter::EncodableValue("pdfHashBytes")));
+                auto data_to_send_to_card = std::get<std::vector<uint8_t>>(copied_args.at(flutter::EncodableValue("pdfHashBytes")));
                 if (data_to_send_to_card.empty()) {
                     throw std::runtime_error("pdfHashBytes cannot be empty.");
                 }
@@ -447,11 +454,11 @@ void NfcsignerPlugin::HandleMethodCall(
                 std::string contact = "info@bmctech.vn";
                 std::string signerName = "BMC T&S JSC";
 
-                auto config_iter = args->find(flutter::EncodableValue("signatureConfig"));
+                auto config_iter = copied_args.find(flutter::EncodableValue("signatureConfig"));
                 std::vector<uint8_t> signatureImageBytes;
                 double signatureImageWidth = 50.0, signatureImageHeight = 50.0;
                 std::string signDate;
-                if (config_iter != args->end()) {
+                if (config_iter != copied_args.end()) {
                     auto signatureConfig = std::get<flutter::EncodableMap>(config_iter->second);
 
                     auto x_iter = signatureConfig.find(flutter::EncodableValue("x"));
@@ -731,22 +738,22 @@ void NfcsignerPlugin::HandleMethodCall(
 
                 // 6. Lấy kết quả và trả về cho Flutter
                 std::vector<uint8_t> signed_pdf_bytes(buffer.begin(), buffer.end());
-                p_result->Success(flutter::EncodableValue(signed_pdf_bytes));
+                shared_result->Success(flutter::EncodableValue(signed_pdf_bytes));
                 std::cout << "=== PDF Signing Completed Successfully ===" << std::endl;
             } catch (const PoDoFo::PdfError& e) {
                 std::string error_msg = std::string("PoDoFo Error: ") + e.what();
                 std::cerr << error_msg << std::endl;
-                p_result->Error("PODOFO_ERROR", error_msg);
+                shared_result->Error("PODOFO_ERROR", error_msg);
             } catch (const std::exception& e) {
                 std::string error_msg = std::string("Standard Exception: ") + e.what();
                 std::cerr << error_msg << std::endl;
-                p_result->Error("STD_EXCEPTION", error_msg);
+                shared_result->Error("STD_EXCEPTION", error_msg);
             } catch (...) {
                 std::string error_msg = "Unknown error occurred during PDF signing";
                 std::cerr << error_msg << std::endl;
-                p_result->Error("UNKNOWN_ERROR", error_msg);
+                shared_result->Error("UNKNOWN_ERROR", error_msg);
             }
-        }, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>(p_result));
+        }, shared_result);
     }
 
     // Build a single PSO:DECIPHER APDU chunk.
@@ -831,11 +838,12 @@ void NfcsignerPlugin::HandleMethodCall(
     }
 
     void NfcsignerPlugin::HandleDecryptData(const flutter::EncodableMap* args, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-        auto p_result = result.release();
-        CardOperation([this, args, p_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
-            auto appletID = std::get<std::string>(args->at(flutter::EncodableValue("appletID")));
-            auto pin = std::get<std::string>(args->at(flutter::EncodableValue("pin")));
-            auto encryptedData = std::get<std::vector<uint8_t>>(args->at(flutter::EncodableValue("encryptedData")));
+        flutter::EncodableMap copied_args = (args != nullptr) ? *args : flutter::EncodableMap();
+        auto shared_result = std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(result.release());
+        CardOperation([this, copied_args = std::move(copied_args), shared_result](SCARDHANDLE hCard, DWORD dwActiveProtocol) {
+            auto appletID = std::get<std::string>(copied_args.at(flutter::EncodableValue("appletID")));
+            auto pin = std::get<std::string>(copied_args.at(flutter::EncodableValue("pin")));
+            auto encryptedData = std::get<std::vector<uint8_t>>(copied_args.at(flutter::EncodableValue("encryptedData")));
 
             auto select_resp = TransmitAndGetResponse(hCard, CreateSelectAppletCommand(appletID), dwActiveProtocol);
             if (select_resp.size() < 2 || select_resp[select_resp.size() - 2] != 0x90) {
@@ -853,8 +861,8 @@ void NfcsignerPlugin::HandleMethodCall(
             }
 
             std::vector<uint8_t> decrypted_data(decrypt_resp.begin(), decrypt_resp.end() - 2);
-            p_result->Success(flutter::EncodableValue(decrypted_data));
+            shared_result->Success(flutter::EncodableValue(decrypted_data));
 
-        }, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>(p_result));
+        }, shared_result);
     }
 }  // namespace nfcsigner
