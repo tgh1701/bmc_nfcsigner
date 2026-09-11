@@ -2,6 +2,8 @@ package com.bmc.nfcsigner
 
 import android.content.Context
 import android.app.Activity
+import android.os.Handler
+import android.os.Looper
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -99,6 +101,20 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
     )
   }
 
+  private val mainHandler = Handler(Looper.getMainLooper())
+
+  private fun postSuccess(result: Result, value: Any?) {
+    mainHandler.post { result.success(value) }
+  }
+
+  private fun postError(result: Result, errorCode: String, errorMessage: String?, errorDetails: Any? = null) {
+    mainHandler.post { result.error(errorCode, errorMessage, errorDetails) }
+  }
+
+  private fun postNotImplemented(result: Result) {
+    mainHandler.post { result.notImplemented() }
+  }
+
   override fun onTagDiscovered(tag: Tag?) {
     val call = pendingCall
     val result = pendingResult
@@ -108,14 +124,16 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       return
     }
 
-    try {
-      nfcCardManager.executeWithNfcCard(tag) { cardManager ->
-        executeCommand(cardManager, call, result)
+    CoroutineScope(Dispatchers.IO).launch {
+      try {
+        nfcCardManager.executeWithNfcCard(tag) { cardManager ->
+          executeCommand(cardManager, call, result)
+        }
+      } catch (e: Exception) {
+        postError(result, "COMMUNICATION_ERROR", "Lỗi giao tiếp với thẻ: ${e.message}", null)
+      } finally {
+        mainHandler.post { cleanup() }
       }
-    } catch (e: Exception) {
-      result.error("COMMUNICATION_ERROR", "Lỗi giao tiếp với thẻ: ${e.message}", null)
-    } finally {
-      cleanup()
     }
   }
 
@@ -127,7 +145,7 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       "signPdf" -> handleSignPdf(cardManager, call, result)
       "generateXMLSignature" -> handleGenerateXMLSignature(cardManager, call, result)
       "decryptData" -> handleDecryptData(cardManager, call, result)
-      else -> result.notImplemented()
+      else -> postNotImplemented(result)
     }
   }
 
@@ -139,7 +157,7 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       val keyIndex = call.argument<Int>("keyIndex")!!
 
       if (!cardManager.selectApplet(hexStringToByteArray(appletID))) {
-        result.error("APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
+        postError(result, "APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
         return
       }
 
@@ -147,15 +165,15 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       if (!pinVerified) {
         val message = if (triesLeft > 0) "Xác thực PIN thất bại. Còn $triesLeft lần thử."
         else "Xác thực PIN thất bại."
-        result.error("AUTH_ERROR", message, null)
+        postError(result, "AUTH_ERROR", message, null)
         return
       }
 
       val signature = cardManager.generateSignature(dataToSign, keyIndex)
-      result.success(signature)
+      postSuccess(result, signature)
 
     } catch (e: Exception) {
-      result.error("COMMUNICATION_ERROR", "Lỗi giao tiếp I/O: ${e.message}", null)
+      postError(result, "COMMUNICATION_ERROR", "Lỗi giao tiếp I/O: ${e.message}", null)
     }
   }
 
@@ -165,17 +183,17 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       val keyRole = call.argument<String>("keyRole")!!
 
       if (!cardManager.selectApplet(hexStringToByteArray(appletID))) {
-        result.error("APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
+        postError(result, "APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
         return
       }
 
       val publicKey = cardManager.getRsaPublicKey(keyRole)
-      result.success(publicKey)
+      postSuccess(result, publicKey)
 
     } catch (e: IllegalArgumentException) {
-      result.error("INVALID_PARAMETERS", e.message, null)
+      postError(result, "INVALID_PARAMETERS", e.message, null)
     } catch (e: Exception) {
-      result.error("COMMUNICATION_ERROR", "Lỗi giao tiếp I/O: ${e.message}", null)
+      postError(result, "COMMUNICATION_ERROR", "Lỗi giao tiếp I/O: ${e.message}", null)
     }
   }
 
@@ -185,15 +203,15 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       val keyRole = call.argument<String>("keyRole")!!
 
       if (!cardManager.selectApplet(hexStringToByteArray(appletID))) {
-        result.error("APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
+        postError(result, "APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
         return
       }
 
       val certificate = cardManager.getCertificate(keyRole)
-      result.success(certificate)
+      postSuccess(result, certificate)
 
     } catch (e: Exception) {
-      result.error("COMMUNICATION_ERROR", "Lỗi giao tiếp I/O: ${e.message}", null)
+      postError(result, "COMMUNICATION_ERROR", "Lỗi giao tiếp I/O: ${e.message}", null)
     }
   }
 
@@ -215,12 +233,12 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
         pdfBytes, cardManager, appletID, pin, keyIndex, reason, location, pdfHashBytes, signatureConfig
       )
 
-      result.success(signedPdf)
+      postSuccess(result, signedPdf)
 
     } catch (e: Exception) {
       logger.debug("PDF signing error: ${e.message}")
       logger.debug("Stack: ${e.stackTraceToString()}")
-      result.error("PDF_SIGN_ERROR", "Lỗi khi ký PDF: ${e.message}", null)
+      postError(result, "PDF_SIGN_ERROR", "Lỗi khi ký PDF: ${e.message}", null)
     }
   }
 
@@ -232,7 +250,7 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       val keyIndex = call.argument<Int>("keyIndex")!!
 
       if (!cardManager.selectApplet(hexStringToByteArray(appletID))) {
-        result.error("APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
+        postError(result, "APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
         return
       }
 
@@ -240,19 +258,19 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       if (!pinVerified) {
         val message = if (triesLeft > 0) "Xác thực PIN thất bại. Còn $triesLeft lần thử."
         else "Xác thực PIN thất bại."
-        result.error("AUTH_ERROR", message, null)
+        postError(result, "AUTH_ERROR", message, null)
         return
       }
 
       val signature = cardManager.generateSignature(dataToSign, keyIndex)
       if (signature == null) {
-        result.error("SIGNING_ERROR", "Không thể tạo chữ ký.", null)
+        postError(result, "SIGNING_ERROR", "Không thể tạo chữ ký.", null)
         return
       }
       val keyRole = "sig" // Hoặc lấy từ call.arguments nếu có
       val certificate = cardManager.getCertificate(keyRole)
       if (certificate == null) {
-        result.error("CERTIFICATE_ERROR", "Không thể lấy certificate từ thẻ.", null)
+        postError(result, "CERTIFICATE_ERROR", "Không thể lấy certificate từ thẻ.", null)
         return
       }
 
@@ -265,10 +283,10 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
         "certificate" to certificateBase64,
         "signature" to signatureBase64
       )
-      result.success(resultMap)
+      postSuccess(result, resultMap)
 
     } catch (e: Exception) {
-      result.error("COMMUNICATION_ERROR", "Lỗi giao tiếp I/O: ${e.message}", null)
+      postError(result, "COMMUNICATION_ERROR", "Lỗi giao tiếp I/O: ${e.message}", null)
     }
   }
 
@@ -279,7 +297,7 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       val encryptedData = call.argument<ByteArray>("encryptedData")!!
 
       if (!cardManager.selectApplet(hexStringToByteArray(appletID))) {
-        result.error("APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
+        postError(result, "APPLET_NOT_SELECTED", "Không thể chọn Applet.", null)
         return
       }
 
@@ -288,16 +306,16 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
       if (!pinVerified) {
         val message = if (triesLeft > 0) "Xác thực PIN thất bại. Còn $triesLeft lần thử."
         else "Xác thực PIN thất bại."
-        result.error("AUTH_ERROR", message, null)
+        postError(result, "AUTH_ERROR", message, null)
         return
       }
 
       // PSO:DECIPHER with command chaining
       val decryptedData = cardManager.decryptData(encryptedData)
-      result.success(decryptedData)
+      postSuccess(result, decryptedData)
 
     } catch (e: Exception) {
-      result.error("DECRYPT_ERROR", "Lỗi giải mã: ${e.message}", null)
+      postError(result, "DECRYPT_ERROR", "Lỗi giải mã: ${e.message}", null)
     }
   }
 
@@ -314,59 +332,14 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
     CoroutineScope(Dispatchers.IO).launch {
       try {
         val success = usbCardManager.executeWithUsbCard { cardManager ->
-          // Chạy card operations + PDF processing trên IO thread
-          // Chỉ switch sang Main thread khi gọi Flutter result callback
-          executeCommandOnIoThread(cardManager, call, result)
+          executeCommand(cardManager, call, result)
         }
 
         if (!success) {
-          withContext(Dispatchers.Main) {
-            result.error("USB_CONNECTION_FAILED", "Không thể kết nối đến USB reader", null)
-          }
+          postError(result, "USB_CONNECTION_FAILED", "Không thể kết nối đến USB reader", null)
         }
       } catch (e: Exception) {
-        withContext(Dispatchers.Main) {
-          result.error("USB_COMM_ERROR", "Lỗi giao tiếp USB: ${e.message}", null)
-        }
-      }
-    }
-  }
-
-  /**
-   * Thực thi command trên IO thread.
-   * Mỗi handler tự chịu trách nhiệm switch sang Main thread khi gọi result.
-   */
-  private suspend fun executeCommandOnIoThread(cardManager: CardOperationManager, call: MethodCall, result: Result) {
-    when (call.method) {
-      "signPdf" -> {
-        // PDF signing chạy hoàn toàn trên IO thread (heavy iText processing)
-        try {
-          val pdfBytes = call.argument<ByteArray>("pdfBytes")!!
-          val appletID = call.argument<String>("appletID")!!
-          val pin = call.argument<String>("pin")!!
-          val keyIndex = call.argument<Int>("keyIndex")!!
-          val reason = call.argument<String>("reason")!!
-          val location = call.argument<String>("location")!!
-          val pdfHashBytes = call.argument<ByteArray>("pdfHashBytes")!!
-          val signatureConfig = SignatureConfig.fromMap(call.argument<Map<String, Any>>("signatureConfig"))
-
-          pdfSigningHelper = PdfSigningHelper(applicationContext)
-          val signedPdf = pdfSigningHelper.signPdf(
-            pdfBytes, cardManager, appletID, pin, keyIndex, reason, location, pdfHashBytes, signatureConfig
-          )
-
-          withContext(Dispatchers.Main) { result.success(signedPdf) }
-        } catch (e: Exception) {
-          logger.debug("PDF signing error: ${e.message}")
-          logger.debug("Stack: ${e.stackTraceToString()}")
-          withContext(Dispatchers.Main) { result.error("PDF_SIGN_ERROR", "Lỗi khi ký PDF: ${e.message}", null) }
-        }
-      }
-      else -> {
-        // Các command khác chạy trên Main thread (nhẹ, cần Flutter result)
-        withContext(Dispatchers.Main) {
-          executeCommand(cardManager, call, result)
-        }
+        postError(result, "USB_COMM_ERROR", "Lỗi giao tiếp USB: ${e.message}", null)
       }
     }
   }
