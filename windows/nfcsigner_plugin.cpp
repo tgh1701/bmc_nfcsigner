@@ -483,7 +483,17 @@ void NfcsignerPlugin::HandleMethodCall(
                     if (signatureImage_iter != signatureConfig.end() && std::holds_alternative<std::vector<uint8_t>>(signatureImage_iter->second)) signatureImageBytes = std::get<std::vector<uint8_t>>(signatureImage_iter->second);
                     if (signatureImageWidth_iter != signatureConfig.end() && std::holds_alternative<double>(signatureImageWidth_iter->second)) signatureImageWidth = std::get<double>(signatureImageWidth_iter->second);
                     if (signatureImageHeight_iter != signatureConfig.end() && std::holds_alternative<double>(signatureImageHeight_iter->second)) signatureImageHeight = std::get<double>(signatureImageHeight_iter->second);
-                    if (signDate_iter != signatureConfig.end() && std::holds_alternative<std::string>(signDate_iter->second)) signDate = std::get<std::string>(signDate_iter->second);
+                if (signDate_iter != signatureConfig.end() && std::holds_alternative<std::string>(signDate_iter->second)) {
+                    signDate = std::get<std::string>(signDate_iter->second);
+                    // Reformat ISO 8601 date string (e.g. 2026-09-11T19:07:52...) to dd/MM/yyyy HH:mm:ss
+                    if (signDate.length() >= 19 && signDate[4] == '-' && signDate[7] == '-') {
+                        std::string yyyy = signDate.substr(0, 4);
+                        std::string mm = signDate.substr(5, 2);
+                        std::string dd = signDate.substr(8, 2);
+                        std::string time = signDate.substr(11, 8);
+                        signDate = dd + "/" + mm + "/" + yyyy + " " + time;
+                    }
+                }
                 }
 
                 // 2. Giao tiếp với thẻ để lấy Certificate
@@ -575,8 +585,8 @@ void NfcsignerPlugin::HandleMethodCall(
                                 img_h = signatureImageHeight > 0 ? signatureImageHeight : 50.0;
 
                                 if (hasText) {
-                                    // Khi có cả chữ: giới hạn ảnh ở nửa trái (tối đa 45% chiều rộng)
-                                    double max_w = (std::min)(width * 0.45, (std::max)(10.0, width - 80.0));
+                                    // Khi có cả chữ: giới hạn ảnh ở tỷ lệ hợp lý (tối đa 35% chiều rộng hoặc tỉ lệ khung hình)
+                                    double max_w = (std::min)(width * 0.35, (std::max)(10.0, width - 90.0));
                                     if (img_w > max_w) {
                                         double ratio = max_w / img_w;
                                         img_w = max_w;
@@ -616,39 +626,148 @@ void NfcsignerPlugin::HandleMethodCall(
                         }
                     }
 
-                    // 2. Vẽ thông tin văn bản cạnh ảnh (side-by-side) không bao giờ bị đè
+                    // 2. Vẽ thông tin văn bản cạnh ảnh (side-by-side) không bao giờ bị đè hoặc tràn khung
                     if (hasText) {
                         try {
                             auto& font = document.GetFonts().GetOrCreateFont("C:\\Windows\\Fonts\\arial.ttf");
-                            double fontSize = 9.0;
-                            if (height < 45.0) fontSize = 7.5;
-                            else if (height > 90.0) fontSize = 10.0;
-                            painter.TextState.SetFont(font, fontSize);
 
                             // Tọa độ X của văn bản: nếu có ảnh thì đặt ở bên phải ảnh, không có ảnh thì bắt đầu từ lề trái
-                            double text_x = hasImage && (img_w > 0) ? (img_x + img_w + 8.0) : 6.0;
+                            double text_x = hasImage && (img_w > 0) ? (img_x + img_w + 6.0) : 4.0;
+                            double available_w = width - text_x - 4.0;
+                            if (available_w < 20.0) available_w = 20.0;
 
-                            std::vector<std::string> lines;
-                            lines.push_back("Người ký: " + signerName);
+                            std::vector<std::string> rawLines;
+                            rawLines.push_back("Người ký: " + signerName);
                             if (!signDate.empty()) {
-                                lines.push_back("Ngày ký: " + signDate);
+                                rawLines.push_back("Ngày ký: " + signDate);
                             }
                             if (!reason.empty() && reason != "Approved" && reason != "Ký duyệt!") {
-                                lines.push_back("Lý do: " + reason);
+                                rawLines.push_back("Lý do: " + reason);
                             }
 
-                            double lineHeight = fontSize * 1.35;
+                            // Cỡ chữ cơ sở
+                            double baseFontSize = 8.5;
+                            if (height < 45.0) baseFontSize = 7.0;
+                            else if (height > 90.0) baseFontSize = 10.0;
+
+                            painter.TextState.SetFont(font, baseFontSize);
+
+                            // Đo chiều rộng dòng dài nhất tại baseFontSize
+                            double maxLineLen = 0.0;
+                            for (const auto& l : rawLines) {
+                                double len = font.GetStringLength(l, painter.TextState);
+                                if (len > maxLineLen) maxLineLen = len;
+                            }
+
+                            // Tự động scale cỡ chữ nếu text dài hơn chiều rộng khả dụng
+                            double fontSize = baseFontSize;
+                            if (maxLineLen > available_w && maxLineLen > 0.0) {
+                                double scaleRatio = available_w / maxLineLen;
+                                if (scaleRatio >= 0.75) {
+                                    fontSize = (std::max)(6.5, baseFontSize * scaleRatio);
+                                    painter.TextState.SetFont(font, fontSize);
+                                } else {
+                                    fontSize = 7.0;
+                                    painter.TextState.SetFont(font, fontSize);
+                                }
+                            }
+
+                            // Helper cắt bớt text bằng dấu ... nếu dòng vẫn dài hơn max_w
+                            auto truncateToFit = [&](const std::string& str, double max_w) -> std::string {
+                                if (font.GetStringLength(str, painter.TextState) <= max_w) return str;
+                                std::string ellipsis = "...";
+                                double ellipsisLen = font.GetStringLength(ellipsis, painter.TextState);
+                                if (ellipsisLen >= max_w) return "";
+
+                                std::string s = str;
+                                while (!s.empty()) {
+                                    while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
+                                        s.pop_back();
+                                    }
+                                    if (!s.empty()) {
+                                        s.pop_back();
+                                    }
+                                    if (font.GetStringLength(s + ellipsis, painter.TextState) <= max_w) {
+                                        return s + ellipsis;
+                                    }
+                                }
+                                return "";
+                            };
+
+                            // Hàm ngắt dòng thông minh theo từ (word wrap) nếu bất kỳ dòng nào dài hơn available_w
+                            auto wrapLine = [&](const std::string& text, double max_w) -> std::vector<std::string> {
+                                std::vector<std::string> res;
+                                if (text.empty()) return res;
+                                if (font.GetStringLength(text, painter.TextState) <= max_w) {
+                                    res.push_back(text);
+                                    return res;
+                                }
+                                std::istringstream iss(text);
+                                std::string word;
+                                std::string currentLine;
+                                while (iss >> word) {
+                                    std::string candidate = currentLine.empty() ? word : (currentLine + " " + word);
+                                    if (font.GetStringLength(candidate, painter.TextState) <= max_w) {
+                                        currentLine = candidate;
+                                    } else {
+                                        if (!currentLine.empty()) {
+                                            res.push_back(currentLine);
+                                            currentLine = word;
+                                        } else {
+                                            res.push_back(word);
+                                            currentLine.clear();
+                                        }
+                                    }
+                                }
+                                if (!currentLine.empty()) {
+                                    res.push_back(currentLine);
+                                }
+                                return res;
+                            };
+
+                            std::vector<std::string> lines;
+                            for (const auto& rawL : rawLines) {
+                                auto wrapped = wrapLine(rawL, available_w);
+                                lines.insert(lines.end(), wrapped.begin(), wrapped.end());
+                            }
+
+                            // Đảm bảo từng dòng không vượt quá available_w
+                            for (auto& l : lines) {
+                                if (font.GetStringLength(l, painter.TextState) > available_w) {
+                                    l = truncateToFit(l, available_w);
+                                }
+                            }
+
+                            // Đảm bảo tổng chiều cao text không tràn khung chữ ký
+                            double lineHeight = fontSize * 1.30;
                             double totalTextHeight = lines.size() * lineHeight;
+                            if (totalTextHeight > height - 4.0 && !lines.empty()) {
+                                double maxLineHeight = (height - 4.0) / lines.size();
+                                if (maxLineHeight < lineHeight) {
+                                    fontSize = (std::max)(5.5, maxLineHeight / 1.25);
+                                    painter.TextState.SetFont(font, fontSize);
+                                    lineHeight = fontSize * 1.25;
+                                    totalTextHeight = lines.size() * lineHeight;
+                                }
+                            }
+
+                            int maxAllowedLines = (std::max)(1, static_cast<int>((height - 4.0) / (fontSize * 1.2)));
+                            if (static_cast<int>(lines.size()) > maxAllowedLines) {
+                                lines.resize(maxAllowedLines);
+                                totalTextHeight = lines.size() * lineHeight;
+                            }
+
                             // Căn giữa theo chiều dọc
                             double start_y = (height + totalTextHeight) / 2.0 - fontSize;
-                            if (start_y > height - 4.0) start_y = height - 4.0;
+                            if (start_y > height - 3.0) start_y = height - 3.0;
 
                             double current_y = start_y;
                             for (const auto& line : lines) {
                                 painter.DrawText(line, text_x, current_y);
                                 current_y -= lineHeight;
                             }
-                            std::cout << "[DEBUG] Text drawn side-by-side at text_x=" << text_x << std::endl;
+                            std::cout << "[DEBUG] Text drawn side-by-side at text_x=" << text_x 
+                                      << ", lines=" << lines.size() << ", fontSize=" << fontSize << std::endl;
                         } catch (const std::exception& e) {
                             std::cout << "[DEBUG] Failed to draw text: " << e.what() << std::endl;
                         }

@@ -40,7 +40,9 @@ class PdfSignatureConfig {
       'signatureImageHeight': signatureImageHeight,
       'contact': contact,
       'signerName': signerName,
-      'signDate': signDate?.toIso8601String(), // Chuyển đổi DateTime thành chuỗi ISO 8601'
+      'signDate': signDate != null
+          ? '${signDate!.day.toString().padLeft(2, '0')}/${signDate!.month.toString().padLeft(2, '0')}/${signDate!.year} ${signDate!.hour.toString().padLeft(2, '0')}:${signDate!.minute.toString().padLeft(2, '0')}:${signDate!.second.toString().padLeft(2, '0')}'
+          : null,
     };
   }
 
