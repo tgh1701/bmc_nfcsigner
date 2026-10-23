@@ -31,6 +31,39 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
     // USB Card Manager
     private lazy var usbCardManager: UsbCardManager = UsbCardManager()
 
+    public override init() {
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleCancelNotification),
+            name: NSNotification.Name("BMC_CANCEL_NFC"),
+            object: nil
+        )
+    }
+
+    @objc private func handleCancelNotification() {
+        cancelSession()
+    }
+
+    @objc public func cancelSession() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if let pending = self.pendingResult {
+                pending(FlutterError(code: "CANCELLED", message: "Thao tác đã bị hủy.", details: nil))
+                self.pendingResult = nil
+            }
+            if let session = self.session {
+                session.invalidate()
+                self.session = nil
+            }
+            self.cleanup()
+        }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(name: "nfcsigner", binaryMessenger: registrar.messenger())
         let instance = NfcsignerPlugin()
@@ -38,13 +71,41 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        if call.method == "cancelNfc" {
+            cancelSession()
+            result(true)
+            return
+        }
+
+        if call.method == "isCardReaderAttached" {
+            result(usbCardManager.isReaderConnected())
+            return
+        }
+
+        let supportedCardMethods = [
+            "generateSignature",
+            "getRsaPublicKey",
+            "getCertificate",
+            "signPdf",
+            "generateXMLSignature",
+            "decryptData"
+        ]
+
+        guard supportedCardMethods.contains(call.method) else {
+            result(FlutterMethodNotImplemented)
+            return
+        }
+
         self.pendingCall = call
         self.pendingResult = result
         
         // Ưu tiên USB nếu có reader được kết nối
         if usbCardManager.isReaderConnected() {
             print("🔌 [USB] Phát hiện đầu đọc USB, sử dụng USB path")
-            handleUsbRequest(call: call, result: result)
+            handleUsbRequest(call: call, result: { [weak self] res in
+                self?.cleanup()
+                result(res)
+            })
             return
         }
         
@@ -421,7 +482,13 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
     public func tagReaderSessionDidBecomeActive(_ session: NFCTagReaderSession) {}
 
     public func tagReaderSession(_ session: NFCTagReaderSession, didInvalidateWithError error: Error) {
-        if let nfcError = error as? NFCReaderError, nfcError.code != .readerSessionInvalidationErrorUserCanceled {
+        if let nfcError = error as? NFCReaderError {
+            if nfcError.code == .readerSessionInvalidationErrorUserCanceled {
+                pendingResult?(FlutterError(code: "CANCELLED", message: "User cancelled", details: nil))
+            } else {
+                pendingResult?(FlutterError(code: "COMMUNICATION_ERROR", message: error.localizedDescription, details: nil))
+            }
+        } else {
             pendingResult?(FlutterError(code: "COMMUNICATION_ERROR", message: error.localizedDescription, details: nil))
         }
         cleanup()
