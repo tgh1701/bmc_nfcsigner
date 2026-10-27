@@ -79,48 +79,70 @@ class UsbCardManager: NSObject {
                 self.logger.debug("Composite device detected — using CCID tunnel")
             }
             
-            // Check if card is present
-            guard slot.state == .validCard else {
-                let stateMessage: String
-                switch slot.state {
-                case .missing:
-                    stateMessage = "Không có thẻ trong đầu đọc"
-                case .empty:
-                    stateMessage = "Đầu đọc rỗng"
-                case .probing:
-                    stateMessage = "Đang kiểm tra thẻ..."
-                case .muteCard:
-                    stateMessage = "Thẻ không phản hồi"
-                @unknown default:
-                    stateMessage = "Trạng thái không xác định"
-                }
-                completion(false, stateMessage)
-                return
-            }
-            
-            // Get the smart card
-            guard let card = slot.makeSmartCard() else {
-                completion(false, "Không thể tạo kết nối với thẻ")
-                return
-            }
-            
-            self.currentCard = card
-            
-            // Begin session with the card
-            card.beginSession { success, error in
-                if let error = error {
-                    self.logger.debug("Session error: \(error.localizedDescription)")
-                    completion(false, "Lỗi phiên làm việc: \(error.localizedDescription)")
+            // Wait for card to become valid (handling probing state while card powers up)
+            self.waitForValidCard(slot: slot) { [weak self] ready, stateMessage in
+                guard let self = self else { return }
+                guard ready else {
+                    completion(false, stateMessage)
                     return
                 }
                 
-                if success {
-                    self.logger.debug("Card session started successfully")
-                    completion(true, nil)
-                } else {
-                    completion(false, "Không thể bắt đầu phiên làm việc với thẻ")
+                // Get the smart card
+                guard let card = slot.makeSmartCard() else {
+                    completion(false, "Không thể tạo kết nối với thẻ")
+                    return
+                }
+                
+                self.currentCard = card
+                
+                // Begin session with the card
+                card.beginSession { success, error in
+                    if let error = error {
+                        self.logger.debug("Session error: \(error.localizedDescription)")
+                        completion(false, "Lỗi phiên làm việc: \(error.localizedDescription)")
+                        return
+                    }
+                    
+                    if success {
+                        self.logger.debug("Card session started successfully")
+                        completion(true, nil)
+                    } else {
+                        completion(false, "Không thể bắt đầu phiên làm việc với thẻ")
+                    }
                 }
             }
+        }
+    }
+    
+    /// Wait for slot state to transition from probing to validCard
+    private func waitForValidCard(slot: TKSmartCardSlot, attempts: Int = 15, delay: TimeInterval = 0.2, completion: @escaping (Bool, String?) -> Void) {
+        if slot.state == .validCard {
+            completion(true, nil)
+            return
+        }
+        
+        if slot.state != .probing || attempts <= 0 {
+            let stateMessage: String
+            switch slot.state {
+            case .missing:
+                stateMessage = "Không có thẻ trong đầu đọc"
+            case .empty:
+                stateMessage = "Đầu đọc rỗng"
+            case .probing:
+                stateMessage = "Hết thời gian chờ khởi động chip thẻ (probing timeout)"
+            case .muteCard:
+                stateMessage = "Thẻ không phản hồi"
+            @unknown default:
+                stateMessage = "Trạng thái thẻ không xác định"
+            }
+            logger.debug("waitForValidCard: \(stateMessage) (state: \(slot.state.rawValue))")
+            completion(false, stateMessage)
+            return
+        }
+        
+        logger.debug("Slot is probing, waiting \(delay)s... (\(attempts) attempts remaining)")
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.waitForValidCard(slot: slot, attempts: attempts - 1, delay: delay, completion: completion)
         }
     }
     
@@ -426,7 +448,8 @@ class UsbCardManager: NSObject {
             }
             
             // Step 2: Get certificate data
-            let getCertApdu = Data([0x00, 0xCA, 0x7F, 0x21, 0x00, 0x08, 0x00]) // Extended Le for large cert
+            // Short Le = 0x00 (256 bytes) with GET RESPONSE chaining for standard ISO 7816 compatibility
+            let getCertApdu = Data([0x00, 0xCA, 0x7F, 0x21, 0x00])
             
             self.transmitApduWithGetResponse(getCertApdu) { responseData, sw1, sw2, error in
                 if error == nil && sw1 == 0x90 && sw2 == 0x00 {

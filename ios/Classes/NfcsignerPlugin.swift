@@ -693,7 +693,8 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
                     return
                 }
 
-                let getCertAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xCA, p1Parameter: 0x7F, p2Parameter: 0x21, data: Data(), expectedResponseLength: 2048)
+                // Short Le = 256 (0x00) with GET RESPONSE (0x61) chaining for contactless ISO 7816 compatibility
+                let getCertAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xCA, p1Parameter: 0x7F, p2Parameter: 0x21, data: Data(), expectedResponseLength: 256)
 
                 self.sendCommandAndGetResponse(tag: tag, apdu: getCertAPDU) { (responseData, sw1, sw2, error) in
                     guard error == nil, sw1 == 0x90, sw2 == 0x00 else {
@@ -997,7 +998,8 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
                 return
             }
 
-            let getCertAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xCA, p1Parameter: 0x7F, p2Parameter: 0x21, data: Data(), expectedResponseLength: 2048)
+            // Short Le = 256 (0x00) with GET RESPONSE (0x61) chaining for contactless ISO 7816 compatibility
+            let getCertAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xCA, p1Parameter: 0x7F, p2Parameter: 0x21, data: Data(), expectedResponseLength: 256)
 
             self.sendCommandAndGetResponse(tag: tag, apdu: getCertAPDU) { (responseData, sw1, sw2, error) in
                 guard error == nil, sw1 == 0x90, sw2 == 0x00 else {
@@ -1231,12 +1233,26 @@ private func createSignedPdf(
                 accumulatedData.append(responseData)
 
                 if sw1 == 0x61 {
+                    // SW1=0x61: More response data available. In ISO 7816-4, SW2=0x00 encodes 256 bytes.
+                    let le = (sw2 == 0) ? 256 : Int(sw2)
                     let getResponseApdu = NFCISO7816APDU(
                         instructionClass: 0x00, instructionCode: 0xC0,
                         p1Parameter: 0x00, p2Parameter: 0x00,
-                        data: Data(), expectedResponseLength: Int(sw2)
+                        data: Data(), expectedResponseLength: le
                     )
                     recursiveSend(currentApdu: getResponseApdu)
+                } else if sw1 == 0x6C {
+                    // SW1=0x6C: Wrong Le field; SW2 encodes exact available length. Re-issue command with Le=sw2.
+                    let le = (sw2 == 0) ? 256 : Int(sw2)
+                    let correctedApdu = NFCISO7816APDU(
+                        instructionClass: currentApdu.instructionClass,
+                        instructionCode: currentApdu.instructionCode,
+                        p1Parameter: currentApdu.p1Parameter,
+                        p2Parameter: currentApdu.p2Parameter,
+                        data: currentApdu.data ?? Data(),
+                        expectedResponseLength: le
+                    )
+                    recursiveSend(currentApdu: correctedApdu)
                 } else {
                     completion(accumulatedData, sw1, sw2, nil)
                 }
