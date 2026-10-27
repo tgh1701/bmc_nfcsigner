@@ -553,7 +553,6 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
             return
         }
 
-        let selectAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xA4, p1Parameter: 0x04, p2Parameter: 0x00, data: dataWithHexString(hex: appletIDHex), expectedResponseLength: -1)
         let verifyAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0x20, p1Parameter: 0x00, p2Parameter: 0x81, data: Data(pin.utf8), expectedResponseLength: -1)
 
         let p2Sign: UInt8 = {
@@ -566,8 +565,9 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
 
         let signAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0x2A, p1Parameter: 0x9E, p2Parameter: p2Sign, data: dataToSign.data, expectedResponseLength: 256)
 
-        sendCommandAndGetResponse(tag: tag, apdu: selectAPDU) { (_, sw1, sw2, error) in
-            guard error == nil, sw1 == 0x90, sw2 == 0x00 else {
+        ensureAppletSelected(tag: tag, appletIDHex: appletIDHex) { [weak self] success, sw1, sw2, error in
+            guard let self = self else { return }
+            guard success else {
                 session.invalidate(errorMessage: "Không thể chọn Applet.")
                 self.pendingResult?(FlutterError(code: "APPLET_NOT_SELECTED", message: "Không thể chọn Applet.", details: ["sw1": sw1, "sw2": sw2]))
                 self.cleanup()
@@ -609,10 +609,9 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
             return
         }
 
-        let selectAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xA4, p1Parameter: 0x04, p2Parameter: 0x00, data: dataWithHexString(hex: appletIDHex), expectedResponseLength: -1)
-
-        sendCommandAndGetResponse(tag: tag, apdu: selectAPDU) { (_, sw1, sw2, error) in
-            guard error == nil, sw1 == 0x90, sw2 == 0x00 else {
+        ensureAppletSelected(tag: tag, appletIDHex: appletIDHex) { [weak self] success, sw1, sw2, error in
+            guard let self = self else { return }
+            guard success else {
                 session.invalidate(errorMessage: "Không thể chọn Applet.")
                 self.pendingResult?(FlutterError(code: "APPLET_NOT_SELECTED", message: "Không thể chọn Applet.", details: ["sw1": sw1, "sw2": sw2]))
                 self.cleanup()
@@ -660,10 +659,9 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
             return
         }
 
-        let selectAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xA4, p1Parameter: 0x04, p2Parameter: 0x00, data: dataWithHexString(hex: appletIDHex), expectedResponseLength: -1)
-
-        sendCommandAndGetResponse(tag: tag, apdu: selectAPDU) { (_, sw1, sw2, error) in
-            guard error == nil, sw1 == 0x90, sw2 == 0x00 else {
+        ensureAppletSelected(tag: tag, appletIDHex: appletIDHex) { [weak self] success, sw1, sw2, error in
+            guard let self = self else { return }
+            guard success else {
                 session.invalidate(errorMessage: "Không thể chọn Applet.")
                 self.pendingResult?(FlutterError(code: "APPLET_NOT_SELECTED", message: "Không thể chọn Applet.", details: ["sw1": sw1, "sw2": sw2]))
                 self.cleanup()
@@ -742,11 +740,11 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
         let contact = signatureConfig?["contact"] as? String
         let signerName = signatureConfig?["signerName"] as? String
 
-        let selectAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xA4, p1Parameter: 0x04, p2Parameter: 0x00, data: dataWithHexString(hex: appletIDHex), expectedResponseLength: -1)
         let verifyAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0x20, p1Parameter: 0x00, p2Parameter: 0x81, data: Data(pin.utf8), expectedResponseLength: -1)
 
-        sendCommandAndGetResponse(tag: tag, apdu: selectAPDU) { (_, sw1, sw2, error) in
-            guard error == nil, sw1 == 0x90, sw2 == 0x00 else {
+        ensureAppletSelected(tag: tag, appletIDHex: appletIDHex) { [weak self] success, sw1, sw2, error in
+            guard let self = self else { return }
+            guard success else {
                 session.invalidate(errorMessage: "Không thể chọn Applet.")
                 self.pendingResult?(FlutterError(code: "APPLET_NOT_SELECTED", message: "Không thể chọn Applet.", details: ["sw1": sw1, "sw2": sw2]))
                 self.cleanup()
@@ -821,8 +819,9 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
 
         let signAPDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0x2A, p1Parameter: 0x9E, p2Parameter: p2Sign, data: dataToSign.data, expectedResponseLength: 256)
 
-        sendCommandAndGetResponse(tag: tag, apdu: selectAPDU) { (_, sw1, sw2, error) in
-            guard error == nil, sw1 == 0x90, sw2 == 0x00 else {
+        ensureAppletSelected(tag: tag, appletIDHex: appletIDHex) { [weak self] success, sw1, sw2, error in
+            guard let self = self else { return }
+            guard success else {
                 session.invalidate(errorMessage: "Không thể chọn Applet.")
                 self.pendingResult?(FlutterError(code: "APPLET_NOT_SELECTED", message: "Không thể chọn Applet.", details: ["sw1": sw1, "sw2": sw2]))
                 self.cleanup()
@@ -891,8 +890,9 @@ public class NfcsignerPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDelega
         var decipherData = Data([0x00])
         decipherData.append(encryptedData.data)
 
-        sendCommandAndGetResponse(tag: tag, apdu: selectAPDU) { (_, sw1, sw2, error) in
-            guard error == nil, sw1 == 0x90, sw2 == 0x00 else {
+        ensureAppletSelected(tag: tag, appletIDHex: appletIDHex) { [weak self] success, sw1, sw2, error in
+            guard let self = self else { return }
+            guard success else {
                 session.invalidate(errorMessage: "Không thể chọn Applet.")
                 self.pendingResult?(FlutterError(code: "APPLET_NOT_SELECTED", message: "Không thể chọn Applet.", details: ["sw1": sw1, "sw2": sw2]))
                 self.cleanup()
@@ -1216,6 +1216,47 @@ private func createSignedPdf(
 }
 
     // MARK: - Helper Functions
+
+    /// Ensure the target applet is selected on the ISO7816 tag.
+    /// In CoreNFC, the reader session automatically sends a SELECT command for the matching AID from entitlements during tag discovery.
+    /// Therefore, if initialSelectedAID matches, the applet is ALREADY selected and sending another SELECT can fail on many JavaCards.
+    private func ensureAppletSelected(
+        tag: NFCISO7816Tag,
+        appletIDHex: String,
+        completion: @escaping (Bool, UInt8, UInt8, Error?) -> Void
+    ) {
+        let initialAID = tag.initialSelectedAID.uppercased()
+        let targetAID = appletIDHex.uppercased()
+        
+        print("ℹ️ [NFC] tag.initialSelectedAID: '\(initialAID)', targetAID: '\(targetAID)'")
+        
+        // If CoreNFC already selected a matching AID (full or prefix match), the applet is ALREADY active!
+        if !initialAID.isEmpty && (initialAID == targetAID || initialAID.hasPrefix(targetAID) || targetAID.hasPrefix(initialAID)) {
+            print("✅ [NFC] Applet already selected by CoreNFC: \(initialAID)")
+            completion(true, 0x90, 0x00, nil)
+            return
+        }
+        
+        // Otherwise, send SELECT command with Le = 0x00 (256 bytes)
+        let aidData = dataWithHexString(hex: appletIDHex)
+        let selectAPDU = NFCISO7816APDU(
+            instructionClass: 0x00,
+            instructionCode: 0xA4,
+            p1Parameter: 0x04,
+            p2Parameter: 0x00,
+            data: aidData,
+            expectedResponseLength: 256
+        )
+        
+        sendCommandAndGetResponse(tag: tag, apdu: selectAPDU) { (_, sw1, sw2, error) in
+            // 9000: Success
+            // 61xx: Success (FCI data returned)
+            // 6985: Conditions of use not satisfied (applet already active)
+            let isSuccess = (error == nil && (sw1 == 0x90 || sw1 == 0x61 || (sw1 == 0x69 && sw2 == 0x85)))
+            print("ℹ️ [NFC] SELECT APDU response: SW1=\(String(format: "%02X", sw1)), SW2=\(String(format: "%02X", sw2)), success=\(isSuccess)")
+            completion(isSuccess, sw1, sw2, error)
+        }
+    }
 
     private func sendCommandAndGetResponse(
         tag: NFCISO7816Tag,

@@ -356,12 +356,13 @@ class UsbCardManager: NSObject {
     
     /// Select applet by AID
     func selectApplet(aid: Data, completion: @escaping (Bool, UInt8, UInt8, Error?) -> Void) {
-        // SELECT APDU: 00 A4 04 00 [Lc] [AID]
+        // SELECT APDU: 00 A4 04 00 [Lc] [AID] 00 (matching Android ApduCommandBuilder.createSelectAppletCommand)
         var apdu = Data([0x00, 0xA4, 0x04, 0x00, UInt8(aid.count)])
         apdu.append(aid)
+        apdu.append(0x00) // Le = 256 for FCI response
         
         transmitApduWithGetResponse(apdu) { _, sw1, sw2, error in
-            let success = (error == nil && sw1 == 0x90 && sw2 == 0x00)
+            let success = (error == nil && (sw1 == 0x90 || sw1 == 0x61 || (sw1 == 0x69 && sw2 == 0x85)))
             completion(success, sw1, sw2, error)
         }
     }
