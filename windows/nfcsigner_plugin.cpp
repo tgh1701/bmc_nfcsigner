@@ -1,4 +1,9 @@
-﻿#define NOMINMAX // Ngăn chặn định nghĩa min và max từ windows.h
+﻿#pragma execution_character_set("utf-8")
+#if defined(_MSC_VER)
+#pragma warning(disable: 4566)
+#endif
+
+#define NOMINMAX // Ngăn chặn định nghĩa min và max từ windows.h
 
 #include "nfcsigner_plugin.h"
 
