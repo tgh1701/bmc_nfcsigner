@@ -1,4 +1,4 @@
-#define NOMINMAX // Ngăn chặn định nghĩa min và max từ windows.h
+﻿#define NOMINMAX // Ngăn chặn định nghĩa min và max từ windows.h
 
 #include "nfcsigner_plugin.h"
 
@@ -395,7 +395,6 @@ void CardOperation(
                         "Không tìm thấy đầu đọc thẻ thông minh.");
       }
 
-      bool anyConnected = false;
       std::string lastErrorCode = "COMMUNICATION_ERROR";
       std::string lastErrorMsg = "Không thể kết nối với thẻ thông minh.";
 
@@ -409,7 +408,6 @@ void CardOperation(
           continue;
         }
 
-        anyConnected = true;
         try {
           std::cout << "[CardOperation] Connected to reader #" << i
                     << " with protocol: "
@@ -1213,9 +1211,7 @@ NfcsignerPlugin::SendChainedDecipher(SCARDHANDLE hCard,
   fullData.insert(fullData.end(), encryptedData.begin(), encryptedData.end());
 
   const size_t kChunkSize = 255;
-  const size_t chunkCount = (fullData.size() + kChunkSize - 1) / kChunkSize;
   size_t offset = 0;
-  size_t chunkIndex = 0;
   std::vector<uint8_t> finalResponse;
 
   while (offset < fullData.size()) {
@@ -1244,7 +1240,6 @@ NfcsignerPlugin::SendChainedDecipher(SCARDHANDLE hCard,
       finalResponse = std::move(resp);
     }
     offset += chunkLen;
-    ++chunkIndex;
   }
 
   return finalResponse;
