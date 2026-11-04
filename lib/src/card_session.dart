@@ -359,7 +359,7 @@ class CardSessionApi {
         _FallbackCardSession(appletId: appletID, pin: pin),
       );
     } on PlatformException catch (e) {
-      if (e.code == 'NOT_IMPLEMENTED') {
+      if (e.code == 'NOT_IMPLEMENTED' || e.code == 'not_implemented' || e.code == 'error' || e.message?.contains('Not implemented') == true) {
         return ServiceResult.success(
           _FallbackCardSession(appletId: appletID, pin: pin),
         );

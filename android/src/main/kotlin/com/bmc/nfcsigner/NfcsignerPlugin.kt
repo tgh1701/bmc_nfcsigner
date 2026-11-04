@@ -329,6 +329,24 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
   }
 
   private fun handleUsbRequest(call: MethodCall, result: Result) {
+    if (!usbDeviceManager.hasPermission()) {
+      logger.debug("USB reader found but no permission. Requesting permission...")
+      if (currentActivity != null) {
+        usbDeviceManager.requestPermission { granted ->
+          if (granted) {
+            logger.debug("USB permission granted. Retrying USB request...")
+            handleUsbRequest(call, result)
+          } else {
+            logger.debug("USB permission denied by user.")
+            postError(result, "USB_PERMISSION_DENIED", "USB access permission denied by user", null)
+          }
+        }
+      } else {
+        postError(result, "NO_ACTIVITY", "Cannot request USB permission without Activity", null)
+      }
+      return
+    }
+
     CoroutineScope(Dispatchers.IO).launch {
       try {
         val success = usbCardManager.executeWithUsbCard { cardManager ->
@@ -336,10 +354,10 @@ class NfcsignerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, NfcAdap
         }
 
         if (!success) {
-          postError(result, "USB_CONNECTION_FAILED", "Không thể kết nối đến USB reader", null)
+          postError(result, "USB_CONNECTION_FAILED", "Failed to connect to USB reader", null)
         }
       } catch (e: Exception) {
-        postError(result, "USB_COMM_ERROR", "Lỗi giao tiếp USB: ${e.message}", null)
+        postError(result, "USB_COMM_ERROR", "USB communication error: ${e.message}", null)
       }
     }
   }

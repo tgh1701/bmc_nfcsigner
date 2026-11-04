@@ -123,8 +123,13 @@ class UsbDeviceManager(private val context: Context) {
     fun requestPermission(callback: (Boolean) -> Unit) {
         val device = usbDevice ?: return callback(false)
         permissionCallback = callback
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_MUTABLE
+        } else {
+            0
+        }
         val permissionIntent = PendingIntent.getBroadcast(
-            context, 0, Intent(usbPermissionAction), PendingIntent.FLAG_IMMUTABLE
+            context, 0, Intent(usbPermissionAction), flags
         )
         usbManager.requestPermission(device, permissionIntent)
     }
